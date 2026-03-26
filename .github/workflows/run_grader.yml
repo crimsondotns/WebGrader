@@ -28,7 +28,7 @@ jobs:
       env:
         GSPREAD_CREDENTIALS: ${{ secrets.GSPREAD_CREDENTIALS }}
       run: |
-        echo "$GSPREAD_CREDENTIALS" | base64 --decode > credentials.json
+        python -c "import base64, os; f = open('credentials.json', 'wb'); f.write(base64.b64decode(os.environ['GSPREAD_CREDENTIALS'])); f.close()"
 
     - name: Run WebGrader
       env:
