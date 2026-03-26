@@ -25,10 +25,7 @@ jobs:
         pip install -e .
 
     - name: Create Credentials JSON
-      env:
-        GSPREAD_CREDENTIALS: ${{ secrets.GSPREAD_CREDENTIALS }}
-      run: |
-        python -c "import base64, os; data = os.environ.get('GSPREAD_CREDENTIALS', '').strip(); f = open('credentials.json', 'wb'); f.write(base64.b64decode(data)); f.close()"
+      run: echo '${{ secrets.GSPREAD_JSON }}' > credentials.json
 
     - name: Run WebGrader
       env:
