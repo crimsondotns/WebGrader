@@ -1,0 +1,10 @@
+Metadata-Version: 2.4
+Name: WebGrader
+Version: 0.1.0
+Summary: A simple tool to rate website security, speed, SEO, and credibility.
+Requires-Python: >=3.7
+Description-Content-Type: text/markdown
+Requires-Dist: requests
+Requires-Dist: beautifulsoup4
+
+﻿# WebGrader
