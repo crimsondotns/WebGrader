@@ -20,10 +20,49 @@ def to_number(val, num_type=float):
     except (ValueError, TypeError):
         return str(val)
 
+# --- ฟังก์ชันวิเคราะห์ความเสี่ยง (มีบัตรผ่าน VIP ให้เหรียญระดับโลก) ---
+def analyze_risk(history_scams, is_honeypot, is_proxy, is_mintable, slippage_mod, buy_tax, sell_tax, fake_token, trust_list, is_in_cex):
+    def safe_float(val):
+        try: return float(val) if val != "" else 0.0
+        except: return 0.0
+
+    h_scams = safe_float(history_scams)
+    honeypot = safe_float(is_honeypot)
+    proxy = safe_float(is_proxy)
+    mintable = safe_float(is_mintable)
+    slip_mod = safe_float(slippage_mod)
+    b_tax = safe_float(buy_tax)
+    s_tax = safe_float(sell_tax)
+    fake = safe_float(fake_token)
+    trust = safe_float(trust_list)
+    
+    # เช็คว่าเป็นเหรียญใหญ่ที่ลิสต์บน CEX ไหม (ถ้ามีความยาวแปลว่ามีชื่อกระดานเทรด)
+    on_cex = True if isinstance(is_in_cex, str) and len(is_in_cex) > 2 else False
+
+    # 👑 กฎพิเศษ: บัตรผ่าน VIP สำหรับเหรียญระดับโลก (Bluechip / Trusted)
+    if trust == 1 or on_cex:
+        # ต่อให้เป็น Proxy หรือ Mintable ก็ให้ผ่าน เพราะเป็นระบบของโปรเจกต์ใหญ่ที่อัปเกรดได้
+        # ยกเว้นว่ามันดันเป็น Honeypot หรือ เหรียญปลอม (Fake) ให้ด่าเหมือนเดิม
+        if honeypot == 1 or fake == 1 or b_tax >= 1:
+            return "🚩 SCAM (FAKE TRUSTED)"
+        return "💎 BLUECHIP / TRUSTED"
+
+    # กฎข้อที่ 1: โกงแน่นอน (หนีไปให้ไกล)
+    if honeypot == 1 or proxy == 1 or h_scams > 0 or fake == 1 or b_tax >= 1 or s_tax >= 1:
+        return "🚩 SCAM / RUG PULL"
+    
+    # กฎข้อที่ 2: เสี่ยงสูงมาก (เจ้ามือคุมได้)
+    if mintable == 1 or slip_mod == 1 or b_tax > 0.15 or s_tax > 0.15:
+        return "⚠️ HIGH RISK"
+    
+    # กฎข้อที่ 3: ผ่านเกณฑ์เบื้องต้น
+    return "✅ PASS / MONITOR"
+# -------------------------------------------------------------
+
 def fetch_goplus_data(row_data, network, address, session):
     url = f"https://api.gopluslabs.io/api/v1/token_security/{network}?contract_addresses={address}"
     
-    max_retries = 6 # เพิ่มจำนวนการลองใหม่กรณีติด Limit
+    max_retries = 6 # จำนวนการลองใหม่กรณีติด Rate Limit
     for attempt in range(max_retries):
         try:
             start_time = time.time()
@@ -39,15 +78,15 @@ def fetch_goplus_data(row_data, network, address, session):
                     if address_key in json_data["result"]:
                         data_res = json_data["result"][address_key]
                         
-                        # ดึงข้อมูล 9 คอลัมน์สำคัญที่ผู้ใช้ต้องการ
+                        # ดึงข้อมูลพื้นฐาน
                         token_name = data_res.get("token_name", "")
                         token_sym = data_res.get("token_symbol", "")
                         
-                        # Insight Fields (แปลงเป็นตัวเลข)
+                        # Insight Fields
                         history_scams = to_number(data_res.get("honeypot_with_same_creator", ""), int)
                         creator_percent = to_number(data_res.get("creator_percent", ""), float)
                         
-                        # Liquidity เอามาจากอันแรกของ dex
+                        # Liquidity เอามาจาก Pool แรก
                         dex_list = data_res.get("dex", [])
                         liquidity = ""
                         if dex_list and len(dex_list) > 0:
@@ -56,23 +95,18 @@ def fetch_goplus_data(row_data, network, address, session):
                         slippage_mod = to_number(data_res.get("slippage_modifiable", ""), int)
                         is_mintable = to_number(data_res.get("is_mintable", ""), int)
                         cooldown = to_number(data_res.get("trading_cooldown", ""), int)
-                        
-                        # Owner Address 
                         owner_address = data_res.get("owner_address", "")
-                        
-                        # เพิ่มชุดที่ 2 (แปลงเป็นตัวเลข)
                         is_honeypot = to_number(data_res.get("is_honeypot", ""), int)
                         is_proxy = to_number(data_res.get("is_proxy", ""), int)
                         buy_tax = to_number(data_res.get("buy_tax", ""), float)
                         sell_tax = to_number(data_res.get("sell_tax", ""), float)
                         is_blacklisted = to_number(data_res.get("is_blacklisted", ""), int)
                         holder_count = to_number(data_res.get("holder_count", ""), int)
-                        
-                        # ชุดที่ 3: สัญญาณอันตรายเพิ่มเติม + ความน่าเชื่อถือ (คอลัมน์ T ถึง X)
                         fake_token = to_number(data_res.get("fake_token", ""), int)
                         is_airdrop_scam = to_number(data_res.get("is_airdrop_scam", ""), int)
                         trust_list = to_number(data_res.get("trust_list", ""), int)
-                        # is_in_cex อาจมาเป็น string "0" หรือ dict {"listed": "1", "cex_list": ["Coinbase"]}
+                        
+                        # CEX Info
                         is_in_cex_raw = data_res.get("is_in_cex", "")
                         is_in_cex = ""
                         if isinstance(is_in_cex_raw, dict):
@@ -85,6 +119,7 @@ def fetch_goplus_data(row_data, network, address, session):
                         else:
                             is_in_cex = to_number(is_in_cex_raw, int)
                             
+                        # Launchpad Info
                         launchpad_raw = data_res.get("launchpad_token", "")
                         launchpad_token = ""
                         if isinstance(launchpad_raw, dict):
@@ -97,18 +132,25 @@ def fetch_goplus_data(row_data, network, address, session):
                         else:
                             launchpad_token = to_number(launchpad_raw, int)
                         
+                        # --- เรียกใช้งาน Bot วิเคราะห์ความเสี่ยง ---
+                        verdict = analyze_risk(
+                            history_scams, is_honeypot, is_proxy, is_mintable, 
+                            slippage_mod, buy_tax, sell_tax, fake_token, trust_list, is_in_cex
+                        )
+                        
+                        # ยัด verdict ไว้เป็นคอลัมน์แรกสุดของชุดข้อมูลใหม่ (Column E)
                         new_columns = [
-                            token_name, token_sym, history_scams, creator_percent, 
+                            verdict, token_name, token_sym, history_scams, creator_percent, 
                             liquidity, slippage_mod, is_mintable, cooldown, owner_address,
                             is_honeypot, is_proxy, buy_tax, sell_tax, is_blacklisted, holder_count,
                             fake_token, is_airdrop_scam, trust_list, is_in_cex, launchpad_token
                         ]
                         
-                        print(f"[{get_timestamp()}] [\033[92mSUCCESS\033[0m] Node: {address[:6]}...{address[-4:]} | Network: {network:<4} | {load_time:.2f}s")
+                        print(f"[{get_timestamp()}] [\033[92mSUCCESS\033[0m] Node: {address[:6]}...{address[-4:]} | Status: {verdict.split()[0]:<10} | {load_time:.2f}s")
                         return row_data + new_columns, "success"
                     else:
                         print(f"[{get_timestamp()}] [\033[38;5;208mNOT FOUND\033[0m] Node: {address[:6]}...{address[-4:]} | Network: {network:<4} | No data in result")
-                        return row_data + ["Not Found"] * 20, "failed"
+                        return row_data + ["Not Found"] * 21, "failed"
                 else:
                     msg = json_data.get("message", "API Error")
                     
@@ -118,13 +160,13 @@ def fetch_goplus_data(row_data, network, address, session):
                         continue
                         
                     print(f"[{get_timestamp()}] [\033[91mAPI ERROR\033[0m] Node: {address[:6]}...{address[-4:]} | Network: {network:<4} | {msg}")
-                    return row_data + [f"Error: {msg}"] * 20, "failed"
+                    return row_data + [f"Error: {msg}"] * 21, "failed"
             else:
                 if attempt < max_retries - 1:
                     time.sleep(2)
                     continue
                 print(f"[{get_timestamp()}] [\033[91mFAILED\033[0m] Node: {address[:6]}...{address[-4:]} | HTTP {response.status_code}")
-                return row_data + [f"HTTP {response.status_code}"] * 20, "failed"
+                return row_data + [f"HTTP {response.status_code}"] * 21, "failed"
                 
         except Exception as e:
             if attempt < max_retries - 1:
@@ -132,12 +174,9 @@ def fetch_goplus_data(row_data, network, address, session):
                 continue
             err_msg = str(e).split('(')[0].strip()
             print(f"[{get_timestamp()}] [\033[91mERROR\033[0m] Node: {address[:6]}...{address[-4:]} | {err_msg}")
-            return row_data + ["Error"] * 20, "failed"
+            return row_data + ["Error"] * 21, "failed"
             
-    return row_data + ["Failed"] * 20, "failed"
-
-def process_row(row, session):
-    pass # ไม่ใช้แล้ว ย้ายมาไว้ข้างล่างหมด
+    return row_data + ["Failed"] * 21, "failed"
 
 def main():
     print(f"[{get_timestamp()}] [SYSTEM]  Initializing GoPlus Security Scanner...")
@@ -158,7 +197,7 @@ def main():
         worksheet_out = sh.worksheet('RSS')
     except gspread.WorksheetNotFound:
         print(f"[{get_timestamp()}] [SYSTEM]  Sheet 'RSS' not found. Creating a new one...")
-        worksheet_out = sh.add_worksheet(title='RSS', rows="1000", cols="20")
+        worksheet_out = sh.add_worksheet(title='RSS', rows="1000", cols="25")
 
     data = worksheet_in.get_all_values()
     if not data:
@@ -179,6 +218,7 @@ def main():
     failed_count = 0
 
     for index, row in enumerate(data[1:], start=2):
+        # ดึงมา 4 คอลัมน์แรก (สมมติว่าเป็น A:D)
         row_data = row[:4]
         while len(row_data) < 4:
             row_data.append("")
@@ -187,8 +227,7 @@ def main():
         address = row[2].strip() if len(row) > 2 else ""
 
         if not address or not network:
-            # ใช้ * 20 เพราะเรารวมทั้งหมดเป็น 20 คอลัมน์ใหม่
-            all_results.append(row_data + ["N/A"] * 20)
+            all_results.append(row_data + ["N/A"] * 21)
             continue
             
         result_row, status = fetch_goplus_data(row_data, network, address, session)
@@ -199,7 +238,7 @@ def main():
         else:
             failed_count += 1
             
-        time.sleep(3)
+        time.sleep(3) # ดีเลย์กันโดน API แบน
 
     print(f"\n[{get_timestamp()}] [SYSTEM]  All queries completed. Updating Google Sheet 'RSS'...")
     
@@ -210,7 +249,7 @@ def main():
         out_headers.append(f"Col {len(out_headers)+1}")
         
     goplus_headers = [
-        "Token Name", "Symbol", 
+        "Final Verdict", "Token Name", "Symbol", 
         "History Scams", "Creator %", "Liquidity (USD)", 
         "Slippage Mod?", "Mintable?", "Cooldown?", "Owner Renounced?",
         "Honeypot?", "Proxy?", "Buy Tax", "Sell Tax", "Blacklist?", "Holders",
@@ -221,34 +260,33 @@ def main():
     final_data = [out_headers] + all_results
     worksheet_out.update(values=final_data, range_name='A1')
 
-    # แปะ Note เพื่อแจ้งเตือนชาวไร่ (Insight Tooltips)
+    # แปะ Note เพื่อแจ้งเตือน (พิกัดคอลัมน์ A-Y)
     insight_notes = {
-        "G1": "สำคัญสุด! ถ้าเลข > 0 คือไอ้นี่คือมิจฉาชีพอาชีพ เคยทำแท้งเหรียญอื่นมาแล้วกี่ครั้ง",
-        "H1": "ถ้าเจ้าของถือ > 5% ก็เสียวแล้ว แต่นี่พี่แกถือ 99% คือรอเทใส่หน้าเราชัดๆ",
-        "I1": "ถ้าสภาพคล่องหลักร้อย/หลักพันเหรียญ อย่าไปเข้า เสียค่าแก๊สฟรี เพราะไม่มีเงินให้เราถอน",
-        "J1": "ถ้าเป็น 1 คือมันแอบแก้ 'ภาษีขาย' เป็น 99% เมื่อไหร่ก็ได้ (โดนขังลืม)",
-        "K1": "ถ้าเป็น 1 คือเจ้าของเสกเหรียญเพิ่มมาทุบราคาได้เรื่อยๆ ไม่จบสิ้น",
-        "L1": "ถ้าเป็น 1 มันอาจจะกักเราไม่ให้ขายทันทีตอนราคากำลังร่วง",
-        "M1": "ถ้าไม่ใช่ 0x000... แปลว่าเจ้าของยังมีกุญแจไขบ้านมาขโมยของได้ตลอดเวลา",
-        "N1": "ขายได้ไหม ถ้าเป็น 1",
-        "O1": "แก้สัญญาได้ไหม ถ้าเป็น 1",
-        "P1": "ภาษีขาซื้อ ถ้าเกิน 10-15%",
-        "Q1": "ภาษีขาขาย ถ้าเกิน 10-15%",
-        "R1": "แบนเราได้ไหม ถ้าเป็น 1",
-        "S1": "จำนวนคนถือถ้าน้อยกว่า 100 (ยกเว้นเหรียญเพิ่งเกิด)",
-        "T1": "1 = เหรียญปลอม ลอกเลียนแบบเหรียญดัง (เช็คชื่อดีๆ มันชอบปลอมเป็นเหรียญ Top)",
-        "U1": "1 = เหรียญขยะที่ส่งเข้ากระเป๋าเราฟรีๆ เพื่อหลอกให้เราไปกดอนุมัติ (Approve) แล้วดูดเงิน",
-        "V1": "1 = เหรียญดังที่น่าเชื่อถือ (มีประวัติดีและได้รับการตรวจสอบสูง)",
-        "W1": "ถ้ามีชื่อ Binance/OKX ฯลฯ แปลว่าเหรียญนี้ลิสต์บนกระดานเทรดใหญ่แล้ว (ปลอดภัยสูง)",
-        "X1": "1 = เหรียญที่เกิดจาก Platform ดัง (เช่น four.meme) มักจะตรวจสอบ Code มาดีระดับหนึ่ง"
+        "E1": "Bot ฟันธงให้! 🚩 SCAM = โกง 100%, ⚠️ HIGH RISK = เสี่ยงสูง, ✅ PASS = ผ่านเกณฑ์เบื้องต้น, 💎 BLUECHIP = เหรียญระดับโลก",
+        "H1": "สำคัญสุด! ถ้าเลข > 0 คือไอ้นี่คือมิจฉาชีพอาชีพ เคยทำแท้งเหรียญอื่นมาแล้วกี่ครั้ง",
+        "I1": "ถ้าเจ้าของถือ > 5% ก็เสียวแล้ว แต่นี่พี่แกถือ 99% คือรอเทใส่หน้าเราชัดๆ",
+        "J1": "ถ้าสภาพคล่องหลักร้อย/หลักพันเหรียญ อย่าไปเข้า เสียค่าแก๊สฟรี เพราะไม่มีเงินให้เราถอน",
+        "K1": "ถ้าเป็น 1 คือมันแอบแก้ 'ภาษีขาย' เป็น 99% เมื่อไหร่ก็ได้ (โดนขังลืม)",
+        "L1": "ถ้าเป็น 1 คือเจ้าของเสกเหรียญเพิ่มมาทุบราคาได้เรื่อยๆ ไม่จบสิ้น",
+        "M1": "ถ้าเป็น 1 มันอาจจะกักเราไม่ให้ขายทันทีตอนราคากำลังร่วง",
+        "N1": "ถ้าไม่ใช่ 0x000... แปลว่าเจ้าของยังมีกุญแจไขบ้านมาขโมยของได้ตลอดเวลา",
+        "O1": "ขายได้ไหม ถ้าเป็น 1 คือมิจฉาชีพ 100%",
+        "P1": "แก้สัญญาได้ไหม ถ้าเป็น 1 (และไม่ใช่เหรียญ Bluechip) ระวังโดนสับขาหลอก",
+        "Q1": "ภาษีขาซื้อ ถ้าเกิน 10-15% เสี่ยง",
+        "R1": "ภาษีขาขาย ถ้าเกิน 10-15% เสี่ยง",
+        "S1": "แบนเราได้ไหม ถ้าเป็น 1",
+        "T1": "จำนวนคนถือถ้าน้อยกว่า 100 (ยกเว้นเหรียญเพิ่งเกิด)",
+        "U1": "1 = เหรียญปลอม ลอกเลียนแบบเหรียญดัง (เช็คชื่อดีๆ มันชอบปลอมเป็นเหรียญ Top)",
+        "V1": "1 = เหรียญขยะที่ส่งเข้ากระเป๋าเราฟรีๆ เพื่อหลอกให้เราไปกดอนุมัติ (Approve) แล้วดูดเงิน",
+        "W1": "1 = เหรียญดังที่น่าเชื่อถือ (มีประวัติดีและได้รับการตรวจสอบสูง)",
+        "X1": "ถ้ามีชื่อ Binance/OKX ฯลฯ แปลว่าเหรียญนี้ลิสต์บนกระดานเทรดใหญ่แล้ว (ปลอดภัยสูง)",
+        "Y1": "1 = เหรียญที่เกิดจาก Platform ดัง (เช่น four.meme) มักจะตรวจสอบ Code มาดีระดับหนึ่ง"
     }
     
-    # ปกติ gspread บางเวอร์ชันต้องใช้ API อ้อมๆ แต่ถ้าคุณเคยใช้ worksheet.update_notes() ได้ก็ใช้ได้เลย
     try:
         worksheet_out.update_notes(insight_notes)
         print(f"[{get_timestamp()}] [SYSTEM]  Added insight notes to headers successfully!")
     except AttributeError:
-        # ถ้าไม่มีไลบรารีรองรับก็ข้ามไป
         print(f"[{get_timestamp()}] [\033[93mWARNING\033[0m] worksheet.update_notes is not supported in this gspread version.")
 
     print(f"[{get_timestamp()}] [SYSTEM]  Sheet 'RSS' updated successfully!")
