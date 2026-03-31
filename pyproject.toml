@@ -15,3 +15,6 @@ dependencies = [
 
 [project.scripts]
 webg = "grader:main"
+
+[tool.setuptools]
+py-modules = ["grader", "defi"]

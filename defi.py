@@ -21,7 +21,7 @@ def to_number(val, num_type=float):
         return str(val)
 
 # --- ฟังก์ชันวิเคราะห์ความเสี่ยง (มีบัตรผ่าน VIP ให้เหรียญระดับโลก) ---
-def analyze_risk(history_scams, is_honeypot, is_proxy, is_mintable, slippage_mod, buy_tax, sell_tax, fake_token, trust_list, is_in_cex):
+def analyze_risk(history_scams, is_honeypot, is_proxy, is_mintable, slippage_mod, buy_tax, sell_tax, fake_token, trust_list, is_in_cex, is_airdrop_scam, is_blacklisted):
     def safe_float(val):
         try: return float(val) if val != "" else 0.0
         except: return 0.0
@@ -35,28 +35,54 @@ def analyze_risk(history_scams, is_honeypot, is_proxy, is_mintable, slippage_mod
     s_tax = safe_float(sell_tax)
     fake = safe_float(fake_token)
     trust = safe_float(trust_list)
+    airdrop = safe_float(is_airdrop_scam)
+    blacklisted = safe_float(is_blacklisted)
     
     # เช็คว่าเป็นเหรียญใหญ่ที่ลิสต์บน CEX ไหม (ถ้ามีความยาวแปลว่ามีชื่อกระดานเทรด)
     on_cex = True if isinstance(is_in_cex, str) and len(is_in_cex) > 2 else False
+
+    score = 100
+    
+    # หักคะแนนตามความเสี่ยง
+    if honeypot == 1 or fake == 1 or airdrop == 1 or b_tax >= 1 or s_tax >= 1:
+        score = 0
+    elif h_scams > 0:
+        score = 0
+    else:
+        if proxy == 1: score -= 20
+        if mintable == 1: score -= 20
+        if slip_mod == 1: score -= 10
+        if b_tax > 0.15: score -= 20
+        elif b_tax > 0: score -= int(b_tax * 100)
+        if s_tax > 0.15: score -= 20
+        elif s_tax > 0: score -= int(s_tax * 100)
+        if blacklisted == 1: score -= 15
+        
+    # โบนัส
+    if trust == 1: score += 40
+    if on_cex: score += 50
+    
+    # จำกัดคะแนนให้อยู่ใน 0-100
+    score = max(0, min(100, int(score)))
 
     # 👑 กฎพิเศษ: บัตรผ่าน VIP สำหรับเหรียญระดับโลก (Bluechip / Trusted)
     if trust == 1 or on_cex:
         # ต่อให้เป็น Proxy หรือ Mintable ก็ให้ผ่าน เพราะเป็นระบบของโปรเจกต์ใหญ่ที่อัปเกรดได้
         # ยกเว้นว่ามันดันเป็น Honeypot หรือ เหรียญปลอม (Fake) ให้ด่าเหมือนเดิม
         if honeypot == 1 or fake == 1 or b_tax >= 1:
-            return "🚩 SCAM (FAKE TRUSTED)"
-        return "💎 BLUECHIP / TRUSTED"
+            return "🚩 SCAM (FAKE TRUSTED)", score
+        return "💎 BLUECHIP / TRUSTED", score
 
     # กฎข้อที่ 1: โกงแน่นอน (หนีไปให้ไกล)
-    if honeypot == 1 or proxy == 1 or h_scams > 0 or fake == 1 or b_tax >= 1 or s_tax >= 1:
-        return "🚩 SCAM / RUG PULL"
+    if score == 0 or proxy == 1 or h_scams > 0:
+        return "🚩 SCAM / RUG PULL", score
     
     # กฎข้อที่ 2: เสี่ยงสูงมาก (เจ้ามือคุมได้)
-    if mintable == 1 or slip_mod == 1 or b_tax > 0.15 or s_tax > 0.15:
-        return "⚠️ HIGH RISK"
+    if score < 70 or mintable == 1 or slip_mod == 1 or b_tax > 0.15 or s_tax > 0.15:
+        return "⚠️ HIGH RISK", score
     
     # กฎข้อที่ 3: ผ่านเกณฑ์เบื้องต้น
-    return "✅ PASS / MONITOR"
+    return "✅ PASS / MONITOR", score
 # -------------------------------------------------------------
 
 def fetch_goplus_data(row_data, network, address, session):
@@ -133,24 +159,24 @@ def fetch_goplus_data(row_data, network, address, session):
                             launchpad_token = to_number(launchpad_raw, int)
                         
                         # --- เรียกใช้งาน Bot วิเคราะห์ความเสี่ยง ---
-                        verdict = analyze_risk(
+                        verdict, score = analyze_risk(
                             history_scams, is_honeypot, is_proxy, is_mintable, 
-                            slippage_mod, buy_tax, sell_tax, fake_token, trust_list, is_in_cex
+                            slippage_mod, buy_tax, sell_tax, fake_token, trust_list, is_in_cex, is_airdrop_scam, is_blacklisted
                         )
                         
-                        # ยัด verdict ไว้เป็นคอลัมน์แรกสุดของชุดข้อมูลใหม่ (Column E)
+                        # ยัด verdict และ score ไว้เป็นคอลัมน์แรกสุดของชุดข้อมูลใหม่ (Column E, F)
                         new_columns = [
-                            verdict, token_name, token_sym, history_scams, creator_percent, 
+                            verdict, score, token_name, token_sym, history_scams, creator_percent, 
                             liquidity, slippage_mod, is_mintable, cooldown, owner_address,
                             is_honeypot, is_proxy, buy_tax, sell_tax, is_blacklisted, holder_count,
                             fake_token, is_airdrop_scam, trust_list, is_in_cex, launchpad_token
                         ]
                         
-                        print(f"[{get_timestamp()}] [\033[92mSUCCESS\033[0m] Node: {address[:6]}...{address[-4:]} | Status: {verdict.split()[0]:<10} | {load_time:.2f}s")
+                        print(f"[{get_timestamp()}] [\033[92mSUCCESS\033[0m] Node: {address[:6]}...{address[-4:]} | Status: {verdict.split()[0]:<10} | Score: {score} | {load_time:.2f}s")
                         return row_data + new_columns, "success"
                     else:
                         print(f"[{get_timestamp()}] [\033[38;5;208mNOT FOUND\033[0m] Node: {address[:6]}...{address[-4:]} | Network: {network:<4} | No data in result")
-                        return row_data + ["Not Found"] * 21, "failed"
+                        return row_data + ["Not Found"] * 22, "failed"
                 else:
                     msg = json_data.get("message", "API Error")
                     
@@ -160,13 +186,13 @@ def fetch_goplus_data(row_data, network, address, session):
                         continue
                         
                     print(f"[{get_timestamp()}] [\033[91mAPI ERROR\033[0m] Node: {address[:6]}...{address[-4:]} | Network: {network:<4} | {msg}")
-                    return row_data + [f"Error: {msg}"] * 21, "failed"
+                    return row_data + [f"Error: {msg}"] * 22, "failed"
             else:
                 if attempt < max_retries - 1:
                     time.sleep(2)
                     continue
                 print(f"[{get_timestamp()}] [\033[91mFAILED\033[0m] Node: {address[:6]}...{address[-4:]} | HTTP {response.status_code}")
-                return row_data + [f"HTTP {response.status_code}"] * 21, "failed"
+                return row_data + [f"HTTP {response.status_code}"] * 22, "failed"
                 
         except Exception as e:
             if attempt < max_retries - 1:
@@ -174,9 +200,9 @@ def fetch_goplus_data(row_data, network, address, session):
                 continue
             err_msg = str(e).split('(')[0].strip()
             print(f"[{get_timestamp()}] [\033[91mERROR\033[0m] Node: {address[:6]}...{address[-4:]} | {err_msg}")
-            return row_data + ["Error"] * 21, "failed"
+            return row_data + ["Error"] * 22, "failed"
             
-    return row_data + ["Failed"] * 21, "failed"
+    return row_data + ["Failed"] * 22, "failed"
 
 def main():
     print(f"[{get_timestamp()}] [SYSTEM]  Initializing GoPlus Security Scanner...")
@@ -227,7 +253,7 @@ def main():
         address = row[2].strip() if len(row) > 2 else ""
 
         if not address or not network:
-            all_results.append(row_data + ["N/A"] * 21)
+            all_results.append(row_data + ["N/A"] * 22)
             continue
             
         result_row, status = fetch_goplus_data(row_data, network, address, session)
@@ -249,7 +275,7 @@ def main():
         out_headers.append(f"Col {len(out_headers)+1}")
         
     goplus_headers = [
-        "Final Verdict", "Token Name", "Symbol", 
+        "Final Verdict", "Score", "Token Name", "Symbol", 
         "History Scams", "Creator %", "Liquidity (USD)", 
         "Slippage Mod?", "Mintable?", "Cooldown?", "Owner Renounced?",
         "Honeypot?", "Proxy?", "Buy Tax", "Sell Tax", "Blacklist?", "Holders",
@@ -263,24 +289,25 @@ def main():
     # แปะ Note เพื่อแจ้งเตือน (พิกัดคอลัมน์ A-Y)
     insight_notes = {
         "E1": "Bot ฟันธงให้! 🚩 SCAM = โกง 100%, ⚠️ HIGH RISK = เสี่ยงสูง, ✅ PASS = ผ่านเกณฑ์เบื้องต้น, 💎 BLUECHIP = เหรียญระดับโลก",
-        "H1": "สำคัญสุด! ถ้าเลข > 0 คือไอ้นี่คือมิจฉาชีพอาชีพ เคยทำแท้งเหรียญอื่นมาแล้วกี่ครั้ง",
-        "I1": "ถ้าเจ้าของถือ > 5% ก็เสียวแล้ว แต่นี่พี่แกถือ 99% คือรอเทใส่หน้าเราชัดๆ",
-        "J1": "ถ้าสภาพคล่องหลักร้อย/หลักพันเหรียญ อย่าไปเข้า เสียค่าแก๊สฟรี เพราะไม่มีเงินให้เราถอน",
-        "K1": "ถ้าเป็น 1 คือมันแอบแก้ 'ภาษีขาย' เป็น 99% เมื่อไหร่ก็ได้ (โดนขังลืม)",
-        "L1": "ถ้าเป็น 1 คือเจ้าของเสกเหรียญเพิ่มมาทุบราคาได้เรื่อยๆ ไม่จบสิ้น",
-        "M1": "ถ้าเป็น 1 มันอาจจะกักเราไม่ให้ขายทันทีตอนราคากำลังร่วง",
-        "N1": "ถ้าไม่ใช่ 0x000... แปลว่าเจ้าของยังมีกุญแจไขบ้านมาขโมยของได้ตลอดเวลา",
-        "O1": "ขายได้ไหม ถ้าเป็น 1 คือมิจฉาชีพ 100%",
-        "P1": "แก้สัญญาได้ไหม ถ้าเป็น 1 (และไม่ใช่เหรียญ Bluechip) ระวังโดนสับขาหลอก",
-        "Q1": "ภาษีขาซื้อ ถ้าเกิน 10-15% เสี่ยง",
-        "R1": "ภาษีขาขาย ถ้าเกิน 10-15% เสี่ยง",
-        "S1": "แบนเราได้ไหม ถ้าเป็น 1",
-        "T1": "จำนวนคนถือถ้าน้อยกว่า 100 (ยกเว้นเหรียญเพิ่งเกิด)",
-        "U1": "1 = เหรียญปลอม ลอกเลียนแบบเหรียญดัง (เช็คชื่อดีๆ มันชอบปลอมเป็นเหรียญ Top)",
-        "V1": "1 = เหรียญขยะที่ส่งเข้ากระเป๋าเราฟรีๆ เพื่อหลอกให้เราไปกดอนุมัติ (Approve) แล้วดูดเงิน",
-        "W1": "1 = เหรียญดังที่น่าเชื่อถือ (มีประวัติดีและได้รับการตรวจสอบสูง)",
-        "X1": "ถ้ามีชื่อ Binance/OKX ฯลฯ แปลว่าเหรียญนี้ลิสต์บนกระดานเทรดใหญ่แล้ว (ปลอดภัยสูง)",
-        "Y1": "1 = เหรียญที่เกิดจาก Platform ดัง (เช่น four.meme) มักจะตรวจสอบ Code มาดีระดับหนึ่ง"
+        "F1": "คะแนนความปลอดภัย 0-100 ยิ่งเยอะยิ่งปลอดภัย",
+        "I1": "สำคัญสุด! ถ้าเลข > 0 คือไอ้นี่คือมิจฉาชีพอาชีพ เคยทำแท้งเหรียญอื่นมาแล้วกี่ครั้ง",
+        "J1": "ถ้าเจ้าของถือ > 5% ก็เสียวแล้ว แต่นี่พี่แกถือ 99% คือรอเทใส่หน้าเราชัดๆ",
+        "K1": "ถ้าสภาพคล่องหลักร้อย/หลักพันเหรียญ อย่าไปเข้า เสียค่าแก๊สฟรี เพราะไม่มีเงินให้เราถอน",
+        "L1": "ถ้าเป็น 1 คือมันแอบแก้ 'ภาษีขาย' เป็น 99% เมื่อไหร่ก็ได้ (โดนขังลืม)",
+        "M1": "ถ้าเป็น 1 คือเจ้าของเสกเหรียญเพิ่มมาทุบราคาได้เรื่อยๆ ไม่จบสิ้น",
+        "N1": "ถ้าเป็น 1 มันอาจจะกักเราไม่ให้ขายทันทีตอนราคากำลังร่วง",
+        "O1": "ถ้าไม่ใช่ 0x000... แปลว่าเจ้าของยังมีกุญแจไขบ้านมาขโมยของได้ตลอดเวลา",
+        "P1": "ขายได้ไหม ถ้าเป็น 1 คือมิจฉาชีพ 100%",
+        "Q1": "แก้สัญญาได้ไหม ถ้าเป็น 1 (และไม่ใช่เหรียญ Bluechip) ระวังโดนสับขาหลอก",
+        "R1": "ภาษีขาซื้อ ถ้าเกิน 10-15% เสี่ยง",
+        "S1": "ภาษีขาขาย ถ้าเกิน 10-15% เสี่ยง",
+        "T1": "แบนเราได้ไหม ถ้าเป็น 1",
+        "U1": "จำนวนคนถือถ้าน้อยกว่า 100 (ยกเว้นเหรียญเพิ่งเกิด)",
+        "V1": "1 = เหรียญปลอม ลอกเลียนแบบเหรียญดัง (เช็คชื่อดีๆ มันชอบปลอมเป็นเหรียญ Top)",
+        "W1": "1 = เหรียญขยะที่ส่งเข้ากระเป๋าเราฟรีๆ เพื่อหลอกให้เราไปกดอนุมัติ (Approve) แล้วดูดเงิน",
+        "X1": "1 = เหรียญดังที่น่าเชื่อถือ (มีประวัติดีและได้รับการตรวจสอบสูง)",
+        "Y1": "ถ้ามีชื่อ Binance/OKX ฯลฯ แปลว่าเหรียญนี้ลิสต์บนกระดานเทรดใหญ่แล้ว (ปลอดภัยสูง)",
+        "Z1": "1 = เหรียญที่เกิดจาก Platform ดัง (เช่น four.meme) มักจะตรวจสอบ Code มาดีระดับหนึ่ง"
     }
     
     try:
